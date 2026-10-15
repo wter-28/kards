@@ -1,0 +1,18 @@
+# 构建产物
+build/
+out/
+*.o
+*.obj
+*.exe
+*.dll
+
+# Qt / IDE 本地文件
+*.user
+*.user.*
+CMakeLists.txt.user*
+.vs/
+.vscode/
+.idea/
+
+# 程序运行时生成的配置
+kards_auto.json
