@@ -55,6 +55,29 @@ void Clicker::click(const QPoint& screenPos, int mode, qint64 windowHandle)
     }
 }
 
+void Clicker::moveTo(const QPoint& screenPos)
+{
+    const QRect virtualRect = ScreenCapture::virtualDesktopRect();
+    if (virtualRect.width() <= 1 || virtualRect.height() <= 1)
+    {
+        return;
+    }
+
+    long normalizedX = static_cast<long>((screenPos.x() - virtualRect.x()) * 65535.0 / (virtualRect.width() - 1));
+    long normalizedY = static_cast<long>((screenPos.y() - virtualRect.y()) * 65535.0 / (virtualRect.height() - 1));
+    normalizedX = qBound(0L, normalizedX, 65535L);
+    normalizedY = qBound(0L, normalizedY, 65535L);
+
+    INPUT move;
+    ZeroMemory(&move, sizeof(move));
+    move.type = INPUT_MOUSE;
+    move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    move.mi.dx = normalizedX;
+    move.mi.dy = normalizedY;
+
+    SendInput(1, &move, sizeof(INPUT));
+}
+
 void Clicker::clickFront(const QPoint& screenPos)
 {
     const QRect virtualRect = ScreenCapture::virtualDesktopRect();

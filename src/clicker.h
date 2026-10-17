@@ -17,6 +17,9 @@ public:
     // 在屏幕坐标 screenPos 处点击一次
     static void click(const QPoint& screenPos, int mode, qint64 windowHandle);
 
+    // 把鼠标移动到屏幕坐标 screenPos（不按下），用于点击后让光标离开按钮
+    static void moveTo(const QPoint& screenPos);
+
     // 按标题查找顶层窗口句柄，找不到返回 0
     static qint64 findWindowByTitle(const QString& title);
 

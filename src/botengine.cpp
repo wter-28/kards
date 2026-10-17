@@ -8,14 +8,6 @@
 #include <QPen>
 #include <QThread>
 
-namespace
-{
-
-// 累计点击“结束回合”达到该次数后，执行 设置齿轮 -> 投降
-constexpr int kSurrenderThreshold = 5;
-
-}   // namespace
-
 BotEngine::BotEngine(QObject* parent)
     : QObject(parent)
 {
@@ -44,9 +36,7 @@ QString BotEngine::stageName(Stage stage) const
     {
     case Stage::Idle:            return QStringLiteral("未运行");
     case Stage::LogicB_WaitStart: return QStringLiteral("逻辑b：等待「开始」");
-    case Stage::LogicA_InGame:    return QStringLiteral("逻辑a：对局中（x=%1/%2）").arg(m_endTurnCount).arg(kSurrenderThreshold);
-    case Stage::OpenMenu:         return QStringLiteral("主逻辑：等待「设置齿轮」");
-    case Stage::Surrender:        return QStringLiteral("主逻辑：等待「投降」");
+    case Stage::LogicA_InGame:    return QStringLiteral("逻辑a：对局中");
     default: break;
     }
     return QStringLiteral("未知");
@@ -207,12 +197,23 @@ void BotEngine::performClick(const QPoint& screenPos)
     Clicker::click(screenPos, m_config.clickMode, m_config.targetWindowHandle);
 }
 
-// 单次点击容易因误触/丢帧而落空，除结算页外的所有点击都补一次，确保生效
-void BotEngine::performClickTwice(const QPoint& screenPos)
+// 单次点击容易因误触/丢帧而落空，所以除结算页外一律连点 3 次；
+// 点完把光标移回屏幕中央，避免光标停在按钮上引发误触。
+void BotEngine::performClickTriple(const QPoint& screenPos)
 {
-    performClick(screenPos);
-    QThread::msleep(140);
-    performClick(screenPos);
+    for (int i = 0; i < 3; ++i)
+    {
+        performClick(screenPos);
+        if (i < 2)
+        {
+            QThread::msleep(120);
+        }
+    }
+
+    if (m_config.clickMode == Clicker::FrontClick)
+    {
+        Clicker::moveTo(ScreenCapture::virtualDesktopRect().center());
+    }
 }
 
 void BotEngine::clickScreenCenter(int times)
@@ -278,14 +279,11 @@ void BotEngine::start()
 
     m_running = true;
     m_scanCount = 0;
-    m_endTurnCount = 0;
     m_stage = Stage::Idle;
 
     emit logMessage(QStringLiteral("=== 已启动 ==="), false);
-    emit logMessage(QStringLiteral("任意时刻：识别「开始」→开始新一局；识别「查看战场」/「失败」/「胜利」或 OCR「继续」→判定结算页，持续点击屏幕中央直到出现「开始」"), false);
-    emit logMessage(QStringLiteral("优先级3=确定，优先级4=结束回合，优先级5=主逻辑（x≥%1 则 设置→投降）")
-                        .arg(kSurrenderThreshold),
-                    false);
+    emit logMessage(QStringLiteral("任意时刻：识别「开始」→开始新一局；识别「查看战场」/「失败」/「胜利」/ OCR「继续」→判定结算页，持续点击屏幕中央直到出现「开始」"), false);
+    emit logMessage(QStringLiteral("任意时刻：识别「确定」/「结束回合」→连点 3 次（点完光标回到屏幕中央）；不执行投降"), false);
     setStage(Stage::LogicB_WaitStart);
 
     m_timer->start(100);
@@ -336,10 +334,8 @@ void BotEngine::onTick()
         setStage(Stage::LogicB_WaitStart);
     }
 
-    if (!handlePriority())
-    {
-        handleMainLogic();
-    }
+    // 所有环节都是事件驱动：没有命中任何关键字时保持等待，不做额外动作
+    handlePriority();
 
     m_scanCount++;
     m_lastCostMs = static_cast<double>(cost.elapsed());
@@ -358,10 +354,9 @@ bool BotEngine::handlePriority()
     // 优先级 1：任意时刻识别到「开始」——视为回到主菜单、开新一局，优先执行并结束本 tick。
     if (matchKey(QStringLiteral("start"), &result))
     {
-        performClickTwice(result.rect.center());
+        performClickTriple(result.rect.center());
         m_clickedThisTick = true;
-        m_endTurnCount = 0;
-        emit logMessage(QStringLiteral("优先级1：识别到「开始」，已点击（视为新一局开始）-> 执行逻辑a"), false);
+        emit logMessage(QStringLiteral("优先级1：识别到「开始」，已连点 3 次（视为新一局开始）-> 执行逻辑a"), false);
         setStage(Stage::LogicA_InGame);
         return true;
     }
@@ -385,7 +380,6 @@ bool BotEngine::handlePriority()
     if (onResultPage)
     {
         m_clickedThisTick = true;
-        m_endTurnCount = 0;
         emit logMessage(QStringLiteral("优先级2：已进入结算页，点击屏幕中央（将持续到出现「开始」）"), false);
         clickScreenCenter(1);
         setStage(Stage::LogicB_WaitStart);
@@ -395,66 +389,23 @@ bool BotEngine::handlePriority()
     // 优先级 3：任意时刻识别到“确定”
     if (matchKey(QStringLiteral("confirm"), &result))
     {
-        performClickTwice(result.rect.center());
+        performClickTriple(result.rect.center());
         m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("优先级3：识别到「确定」，已点击"), false);
+        emit logMessage(QStringLiteral("优先级3：识别到「确定」，已连点 3 次"), false);
         return true;
     }
 
-    // 优先级 4：对局中任意时刻识别到“结束回合”
-    if (m_stage == Stage::LogicA_InGame && matchKey(QStringLiteral("endTurn"), &result))
+    // 优先级 4：任意时刻识别到“结束回合”
+    if (matchKey(QStringLiteral("endTurn"), &result))
     {
-        performClickTwice(result.rect.center());
+        performClickTriple(result.rect.center());
         m_clickedThisTick = true;
-        m_endTurnCount++;
-        emit logMessage(QStringLiteral("优先级3：识别到「结束回合」，已点击，记录次数 x=%1").arg(m_endTurnCount), false);
-
-        if (m_endTurnCount >= kSurrenderThreshold)
-        {
-            emit logMessage(QStringLiteral("x ≥ %1，转入主逻辑：打开设置并投降").arg(kSurrenderThreshold), false);
-            setStage(Stage::OpenMenu);
-        }
+        emit logMessage(QStringLiteral("优先级4：识别到「结束回合」，已连点 3 次"), false);
+        setStage(Stage::LogicA_InGame);
         return true;
     }
 
     return false;
-}
-
-void BotEngine::handleMainLogic()
-{
-    Matcher::Result result;
-
-    switch (m_stage)
-    {
-    case Stage::LogicB_WaitStart:
-    case Stage::LogicA_InGame:
-        // 逻辑a / 逻辑b：保持执行。等待的动作由优先级 1~3 每 tick 检查，这里不做额外点击。
-        break;
-
-    case Stage::OpenMenu:
-        if (matchKey(QStringLiteral("menu"), &result))
-        {
-            performClickTwice(result.rect.center());
-            m_clickedThisTick = true;
-            emit logMessage(QStringLiteral("主逻辑：识别到「设置齿轮」，已点击"), false);
-            setStage(Stage::Surrender);
-        }
-        break;
-
-    case Stage::Surrender:
-        if (matchKey(QStringLiteral("surrender"), &result))
-        {
-            performClickTwice(result.rect.center());
-            m_clickedThisTick = true;
-            m_endTurnCount = 0;
-            emit logMessage(QStringLiteral("主逻辑：识别到「投降」，已点击，次数 x 清零 -> 执行逻辑b"), false);
-            setStage(Stage::LogicB_WaitStart);
-        }
-        break;
-
-    default:
-        break;
-    }
 }
 
 void BotEngine::buildPreview(const QImage& screen)
