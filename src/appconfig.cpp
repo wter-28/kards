@@ -1,5 +1,7 @@
 #include "appconfig.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -30,10 +32,33 @@ QList<TemplateConfig> defaultTemplates()
     return list;
 }
 
+// 模板目录：优先用程序目录内或其上一级的 assets（方便整个工程目录独立运行），
+// 都找不到时回退到既有的固定资源目录
+static QString defaultAssetsPath()
+{
+    const QDir exeDir(QCoreApplication::applicationDirPath());
+
+    const QStringList candidates =
+    {
+        exeDir.filePath(QStringLiteral("assets")),
+        QDir::cleanPath(exeDir.filePath(QStringLiteral("../assets"))),
+    };
+
+    for (const QString& path : candidates)
+    {
+        if (QDir(path).exists())
+        {
+            return QDir::toNativeSeparators(path);
+        }
+    }
+
+    return QStringLiteral("D:\\MyDesktop\\kards auto bat\\assets");
+}
+
 AppConfig defaultConfig()
 {
     AppConfig config;
-    config.assetsPath = QStringLiteral("D:\\MyDesktop\\kards auto bat\\assets");
+    config.assetsPath = defaultAssetsPath();
     config.templates = defaultTemplates();
     return config;
 }
