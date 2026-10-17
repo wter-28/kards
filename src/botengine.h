@@ -59,7 +59,7 @@ private slots:
 private:
     struct Entry
     {
-        QImage gray;        // 灰度模板
+        QImage gray;        // 边缘特征模板（由资源图经 Matcher::toEdge 得到）
         QRect  roi;         // 屏幕坐标下的搜索区域，空表示全屏
         bool   valid = false;
         bool   enabled = true;
@@ -91,6 +91,7 @@ private:
 
     QImage m_currentScreen;
     QImage m_currentGray;
+    QImage m_currentEdge;
     QPoint m_currentOrigin;
     bool   m_clickedThisTick = false;
 

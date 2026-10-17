@@ -17,6 +17,11 @@ public:
     // 转成灰度图
     static QImage toGray(const QImage& source);
 
+    // 边缘特征图：中心差分梯度幅值 + 噪声抑制。
+    // 同款按钮（仅文字不同）在灰度上极易误配，改用边缘特征后，
+    // 匹配由字形/图标结构主导，扁平背景噪声贡献被压掉，判别力大幅提升。
+    static QImage toEdge(const QImage& gray);
+
     // 按整数倍降采样（盒式平均）
     static QImage downscale(const QImage& gray, int factor);
 

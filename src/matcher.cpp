@@ -269,6 +269,56 @@ QImage Matcher::toGray(const QImage& source)
     return source.convertToFormat(QImage::Format_Grayscale8);
 }
 
+QImage Matcher::toEdge(const QImage& gray)
+{
+    const QImage source = toGray(gray);
+    if (source.isNull() || source.width() < 3 || source.height() < 3)
+    {
+        return source;
+    }
+
+    const int width = source.width();
+    const int height = source.height();
+
+    QImage result(width, height, QImage::Format_Grayscale8);
+    if (result.isNull())
+    {
+        return source;
+    }
+    result.fill(0);
+
+    // 噪声抑制门限（0~255 梯度尺度）：低于该强度的微小起伏视为噪声，
+    // 只保留字形笔画、图标轮廓这类强边缘，避免石纹噪点主导相关计算。
+    constexpr double kNoiseFloor = 8.0;
+
+    for (int y = 1; y < height - 1; ++y)
+    {
+        const uchar* previousRow = source.constScanLine(y - 1);
+        const uchar* currentRow = source.constScanLine(y);
+        const uchar* nextRow = source.constScanLine(y + 1);
+        uchar* outputRow = result.scanLine(y);
+
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const double gx = (static_cast<double>(currentRow[x + 1]) - static_cast<double>(currentRow[x - 1])) * 0.5;
+            const double gy = (static_cast<double>(nextRow[x]) - static_cast<double>(previousRow[x])) * 0.5;
+
+            double magnitude = std::sqrt(gx * gx + gy * gy) - kNoiseFloor;
+            if (magnitude <= 0.0)
+            {
+                magnitude = 0.0;
+            }
+            else if (magnitude >= 255.0)
+            {
+                magnitude = 255.0;
+            }
+            outputRow[x] = static_cast<uchar>(magnitude);
+        }
+    }
+
+    return result;
+}
+
 QImage Matcher::downscale(const QImage& gray, int factor)
 {
     if (gray.isNull() || factor <= 1)

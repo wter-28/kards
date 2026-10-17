@@ -82,7 +82,7 @@ void BotEngine::loadTemplates()
         }
         else
         {
-            entry.gray = Matcher::toGray(image);
+            entry.gray = Matcher::toEdge(Matcher::toGray(image));
             entry.valid = !entry.gray.isNull();
             if (entry.valid)
             {
@@ -116,7 +116,7 @@ bool BotEngine::matchKey(const QString& key, Matcher::Result* out)
         m_drawRois.append(iterator->roi);
     }
 
-    Matcher::Result result = Matcher::match(m_currentGray,
+    Matcher::Result result = Matcher::match(m_currentEdge,
                                             iterator->gray,
                                             roiImage,
                                             m_config.coarseFactor,
@@ -319,6 +319,7 @@ void BotEngine::onTick()
     m_currentOrigin = m_capture.lastCaptureRect().topLeft();
     m_currentScreen = screen;
     m_currentGray = Matcher::toGray(screen);
+    m_currentEdge = Matcher::toEdge(m_currentGray);
     m_clickedThisTick = false;
     m_drawRois.clear();
     m_drawHits.clear();
