@@ -22,6 +22,8 @@ QList<TemplateConfig> defaultTemplates()
 
     add(QStringLiteral("start"),     QStringLiteral("图片1   开始"),        QStringLiteral("1.png"));
     add(QStringLiteral("battle"),    QStringLiteral("查看战场"),            QStringLiteral("12.png"));
+    add(QStringLiteral("defeat"),    QStringLiteral("图片13  失败(结算页)"), QStringLiteral("13.png"));
+    add(QStringLiteral("victory"),   QStringLiteral("图片14  胜利(结算页)"), QStringLiteral("14.png"));
     add(QStringLiteral("confirm"),   QStringLiteral("图片3   确定"),        QStringLiteral("3.png"));
     add(QStringLiteral("endTurn"),   QStringLiteral("图片5   结束回合"),    QStringLiteral("5.png"));
     add(QStringLiteral("menu"),      QStringLiteral("图片10  设置齿轮"),    QStringLiteral("10.png"));

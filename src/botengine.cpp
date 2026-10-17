@@ -271,12 +271,11 @@ void BotEngine::start()
     m_running = true;
     m_scanCount = 0;
     m_endTurnCount = 0;
-    m_battleArmed = true;
     m_stage = Stage::Idle;
 
     emit logMessage(QStringLiteral("=== 已启动 ==="), false);
-    emit logMessage(QStringLiteral("任意时刻：识别「查看战场」→点击屏幕中央3次；识别「开始」→开始新一局"), false);
-    emit logMessage(QStringLiteral("优先级2=继续(OCR)/确定，优先级3=结束回合，优先级4=主逻辑（x≥%1 则 设置→投降）")
+    emit logMessage(QStringLiteral("任意时刻：识别「开始」→开始新一局；识别「查看战场」/「失败」/「胜利」或 OCR「继续」→判定结算页，持续点击屏幕中央直到出现「开始」"), false);
+    emit logMessage(QStringLiteral("优先级3=确定，优先级4=结束回合，优先级5=主逻辑（x≥%1 则 设置→投降）")
                         .arg(kSurrenderThreshold),
                     false);
     setStage(Stage::LogicB_WaitStart);
@@ -348,68 +347,53 @@ bool BotEngine::handlePriority()
 {
     Matcher::Result result;
 
-    // 「查看战场」与「开始」在任何状态下都持续检测，且互不阻塞：
-    // 二者在同一 tick 内都会各自执行，不会因为命中其中一个而跳过另一个。
-    bool acted = false;
-
-    // 任意时刻识别到“查看战场”：点击屏幕中央 3 次。
-    // 该按钮可能持续停留在屏幕上，因此只有“从消失到再次出现”才触发一次三连击，避免反复点击。
-    const bool battleFound = matchKey(QStringLiteral("battle"), &result);
-    if (battleFound && m_battleArmed)
-    {
-        m_battleArmed = false;
-        m_clickedThisTick = true;
-        acted = true;
-        emit logMessage(QStringLiteral("识别到「查看战场」，点击屏幕中央 3 次"), false);
-        clickScreenCenter(3);
-    }
-    if (!battleFound)
-    {
-        m_battleArmed = true;
-    }
-
-    // 任意时刻识别到“开始”：立即点击，视为新一局开始 -> 执行逻辑a
+    // 优先级 1：任意时刻识别到「开始」——视为回到主菜单、开新一局，优先执行并结束本 tick。
     if (matchKey(QStringLiteral("start"), &result))
     {
         performClick(result.rect.center());
         m_clickedThisTick = true;
         m_endTurnCount = 0;
-        acted = true;
         emit logMessage(QStringLiteral("优先级1：识别到「开始」，已点击（视为新一局开始）-> 执行逻辑a"), false);
         setStage(Stage::LogicA_InGame);
-    }
-
-    // 「查看战场 / 开始」本 tick 已有动作时，其余优先级让位，下一 tick 继续检测
-    if (acted)
-    {
         return true;
     }
 
-    // 优先级 2：任意时刻识别到“确定”
+    // 优先级 2：结算页（对局结束）判定——「查看战场」/「失败」/「胜利」/ OCR「继续」任一命中即算。
+    // 判定成立时，每轮都点击屏幕中央，持续到识别到「开始」为止（「开始」由优先级 1 接管）。
+    bool onResultPage = matchKey(QStringLiteral("battle"), &result);
+    if (!onResultPage)
+    {
+        onResultPage = matchKey(QStringLiteral("defeat"), &result);
+    }
+    if (!onResultPage)
+    {
+        onResultPage = matchKey(QStringLiteral("victory"), &result);
+    }
+    if (!onResultPage && m_config.contOcrEnabled)
+    {
+        QPoint contPos;
+        onResultPage = detectOcrText(m_config.contOcrText, m_config.contOcrRoi, &contPos);
+    }
+    if (onResultPage)
+    {
+        m_clickedThisTick = true;
+        m_endTurnCount = 0;
+        emit logMessage(QStringLiteral("优先级2：已进入结算页，点击屏幕中央（将持续到出现「开始」）"), false);
+        clickScreenCenter(1);
+        setStage(Stage::LogicB_WaitStart);
+        return true;
+    }
+
+    // 优先级 3：任意时刻识别到“确定”
     if (matchKey(QStringLiteral("confirm"), &result))
     {
         performClick(result.rect.center());
         m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("优先级2：识别到「确定」，已点击"), false);
+        emit logMessage(QStringLiteral("优先级3：识别到「确定」，已点击"), false);
         return true;
     }
 
-    // 优先级 2：任意时刻 OCR 识别到“继续”
-    if (m_config.contOcrEnabled)
-    {
-        QPoint contPos;
-        if (detectOcrText(m_config.contOcrText, m_config.contOcrRoi, &contPos))
-        {
-            performClick(contPos);
-            m_clickedThisTick = true;
-            m_endTurnCount = 0;
-            emit logMessage(QStringLiteral("优先级2：OCR 识别到「%1」，已点击（视为对局结束）-> 执行逻辑b").arg(m_config.contOcrText), false);
-            setStage(Stage::LogicB_WaitStart);
-            return true;
-        }
-    }
-
-    // 优先级 3：对局中任意时刻识别到“结束回合”
+    // 优先级 4：对局中任意时刻识别到“结束回合”
     if (m_stage == Stage::LogicA_InGame && matchKey(QStringLiteral("endTurn"), &result))
     {
         performClick(result.rect.center());
