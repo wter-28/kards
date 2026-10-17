@@ -207,6 +207,14 @@ void BotEngine::performClick(const QPoint& screenPos)
     Clicker::click(screenPos, m_config.clickMode, m_config.targetWindowHandle);
 }
 
+// 单次点击容易因误触/丢帧而落空，除结算页外的所有点击都补一次，确保生效
+void BotEngine::performClickTwice(const QPoint& screenPos)
+{
+    performClick(screenPos);
+    QThread::msleep(140);
+    performClick(screenPos);
+}
+
 void BotEngine::clickScreenCenter(int times)
 {
     const QPoint center = ScreenCapture::virtualDesktopRect().center();
@@ -350,7 +358,7 @@ bool BotEngine::handlePriority()
     // 优先级 1：任意时刻识别到「开始」——视为回到主菜单、开新一局，优先执行并结束本 tick。
     if (matchKey(QStringLiteral("start"), &result))
     {
-        performClick(result.rect.center());
+        performClickTwice(result.rect.center());
         m_clickedThisTick = true;
         m_endTurnCount = 0;
         emit logMessage(QStringLiteral("优先级1：识别到「开始」，已点击（视为新一局开始）-> 执行逻辑a"), false);
@@ -387,7 +395,7 @@ bool BotEngine::handlePriority()
     // 优先级 3：任意时刻识别到“确定”
     if (matchKey(QStringLiteral("confirm"), &result))
     {
-        performClick(result.rect.center());
+        performClickTwice(result.rect.center());
         m_clickedThisTick = true;
         emit logMessage(QStringLiteral("优先级3：识别到「确定」，已点击"), false);
         return true;
@@ -396,7 +404,7 @@ bool BotEngine::handlePriority()
     // 优先级 4：对局中任意时刻识别到“结束回合”
     if (m_stage == Stage::LogicA_InGame && matchKey(QStringLiteral("endTurn"), &result))
     {
-        performClick(result.rect.center());
+        performClickTwice(result.rect.center());
         m_clickedThisTick = true;
         m_endTurnCount++;
         emit logMessage(QStringLiteral("优先级3：识别到「结束回合」，已点击，记录次数 x=%1").arg(m_endTurnCount), false);
@@ -426,7 +434,7 @@ void BotEngine::handleMainLogic()
     case Stage::OpenMenu:
         if (matchKey(QStringLiteral("menu"), &result))
         {
-            performClick(result.rect.center());
+            performClickTwice(result.rect.center());
             m_clickedThisTick = true;
             emit logMessage(QStringLiteral("主逻辑：识别到「设置齿轮」，已点击"), false);
             setStage(Stage::Surrender);
@@ -436,7 +444,7 @@ void BotEngine::handleMainLogic()
     case Stage::Surrender:
         if (matchKey(QStringLiteral("surrender"), &result))
         {
-            performClick(result.rect.center());
+            performClickTwice(result.rect.center());
             m_clickedThisTick = true;
             m_endTurnCount = 0;
             emit logMessage(QStringLiteral("主逻辑：识别到「投降」，已点击，次数 x 清零 -> 执行逻辑b"), false);

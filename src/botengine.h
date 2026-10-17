@@ -70,6 +70,7 @@ private:
     void setStage(Stage stage);
     QString stageName(Stage stage) const;
     void performClick(const QPoint& screenPos);
+    void performClickTwice(const QPoint& screenPos);   // 连点两次（结算页以外的点击都用这个）
     void clickScreenCenter(int times);
     void buildPreview(const QImage& screen);
 
