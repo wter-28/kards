@@ -19,6 +19,8 @@ set(PROJECT_SOURCES
     src/matcher.cpp
     src/clicker.h
     src/clicker.cpp
+    src/ocr.h
+    src/ocr.cpp
     src/botengine.h
     src/botengine.cpp
     src/roipicker.h

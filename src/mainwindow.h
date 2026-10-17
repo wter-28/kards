@@ -32,6 +32,7 @@ private slots:
     void onStop();
     void onPickRoi();
     void onClearRoi();
+    void onPickOcrRoi();
     void onSaveConfig();
     void onReloadConfig();
     void onRefreshWindows();
@@ -47,6 +48,7 @@ private:
     void applyConfigToUi();
     void collectUiToConfig();
     void refreshTemplateTable();
+    void updateOcrRoiLabel();
     QString configPath() const;
     bool validateTemplates(QString* errorMessage) const;
 
@@ -62,11 +64,9 @@ private:
     QComboBox*      m_coarseCombo = nullptr;
     QComboBox*      m_clickModeCombo = nullptr;
     QComboBox*      m_windowCombo = nullptr;
-    QSpinBox*       m_timeoutSpin = nullptr;
-    QCheckBox*      m_retryCheck = nullptr;
-    QCheckBox*      m_useFallbackCheck = nullptr;
-    QSpinBox*       m_fallbackXSpin = nullptr;
-    QSpinBox*       m_fallbackYSpin = nullptr;
+    QCheckBox*      m_contOcrCheck = nullptr;
+    QLineEdit*      m_contTextEdit = nullptr;
+    QLabel*         m_ocrRoiLabel = nullptr;
 
     QTableWidget*   m_table = nullptr;
     QLabel*         m_previewLabel = nullptr;

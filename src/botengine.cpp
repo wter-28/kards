@@ -3,8 +3,18 @@
 #include "clicker.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QPainter>
 #include <QPen>
+#include <QThread>
+
+namespace
+{
+
+// 累计点击“结束回合”达到该次数后，执行 设置齿轮 -> 投降
+constexpr int kSurrenderThreshold = 5;
+
+}   // namespace
 
 BotEngine::BotEngine(QObject* parent)
     : QObject(parent)
@@ -28,32 +38,15 @@ AppConfig BotEngine::config() const
     return m_config;
 }
 
-QString BotEngine::turnKey(int turn) const
-{
-    switch (turn)
-    {
-    case 1: return QStringLiteral("turn1");
-    case 2: return QStringLiteral("turn2");
-    case 3: return QStringLiteral("turn3");
-    case 4: return QStringLiteral("turn4");
-    case 5: return QStringLiteral("turn5");
-    default: break;
-    }
-    return QString();
-}
-
 QString BotEngine::stageName(Stage stage) const
 {
     switch (stage)
     {
-    case Stage::Idle:             return QStringLiteral("未运行");
-    case Stage::WaitingImage1:    return QStringLiteral("等待图片1（开始）");
-    case Stage::WaitingImage2:    return QStringLiteral("等待图片2（选择要替换的卡牌）");
-    case Stage::WaitingImage3:    return QStringLiteral("等待图片3（确认）");
-    case Stage::Playing:          return QStringLiteral("对局中：等待回合%1").arg(m_expectedTurn);
-    case Stage::OpenSettings:     return QStringLiteral("等待图片10（设置齿轮）");
-    case Stage::Surrender:        return QStringLiteral("等待图片11（投降）");
-    case Stage::Returning:        return QStringLiteral("回主界面：点击图片1的位置");
+    case Stage::Idle:            return QStringLiteral("未运行");
+    case Stage::LogicB_WaitStart: return QStringLiteral("逻辑b：等待「开始」");
+    case Stage::LogicA_InGame:    return QStringLiteral("逻辑a：对局中（x=%1/%2）").arg(m_endTurnCount).arg(kSurrenderThreshold);
+    case Stage::OpenMenu:         return QStringLiteral("主逻辑：等待「设置齿轮」");
+    case Stage::Surrender:        return QStringLiteral("主逻辑：等待「投降」");
     default: break;
     }
     return QStringLiteral("未知");
@@ -81,7 +74,7 @@ void BotEngine::loadTemplates()
         entry.enabled = item.enabled;
 
         const QString filePath = directory.filePath(item.fileName);
-        QImage image(filePath);
+        const QImage image(filePath);
         if (image.isNull())
         {
             entry.valid = false;
@@ -97,7 +90,9 @@ void BotEngine::loadTemplates()
                                     .arg(item.displayName)
                                     .arg(entry.gray.width())
                                     .arg(entry.gray.height())
-                                    .arg(item.roi.isEmpty() ? QStringLiteral("全屏搜索") : QStringLiteral("区域 %1,%2,%3,%4").arg(item.roi.x()).arg(item.roi.y()).arg(item.roi.width()).arg(item.roi.height())),
+                                    .arg(item.roi.isEmpty()
+                                             ? QStringLiteral("全屏搜索")
+                                             : QStringLiteral("区域 %1,%2,%3,%4").arg(item.roi.x()).arg(item.roi.y()).arg(item.roi.width()).arg(item.roi.height())),
                                 false);
             }
         }
@@ -141,9 +136,88 @@ bool BotEngine::matchKey(const QString& key, Matcher::Result* out)
     return result.found;
 }
 
+bool BotEngine::detectOcrText(const QString& target, const QRect& screenRoi, QPoint* screenPos)
+{
+    if (m_currentScreen.isNull() || target.isEmpty())
+    {
+        return false;
+    }
+
+    // 相对整张截图的裁剪区域（空 ROI 表示全屏）
+    QRect crop = m_currentScreen.rect();
+    if (!screenRoi.isEmpty())
+    {
+        crop = screenRoi.translated(-m_currentOrigin).intersected(m_currentScreen.rect());
+        if (crop.isEmpty())
+        {
+            return false;
+        }
+    }
+
+    QImage region = m_currentScreen.copy(crop);
+
+    // 限制尺寸，避免超过 OCR 引擎可处理的上限
+    constexpr int kMaxOcrDimension = 2000;
+    double scale = 1.0;
+    if (region.width() > kMaxOcrDimension || region.height() > kMaxOcrDimension)
+    {
+        scale = static_cast<double>(kMaxOcrDimension) / static_cast<double>(qMax(region.width(), region.height()));
+        region = region.scaled(qMax(1, qRound(region.width() * scale)),
+                               qMax(1, qRound(region.height() * scale)),
+                               Qt::IgnoreAspectRatio,
+                               Qt::SmoothTransformation);
+    }
+
+    QList<OcrService::Word> words;
+    QString error;
+    if (!m_ocr.recognize(region, &words, &error))
+    {
+        // 只有子进程彻底不可用时才报错，避免每轮刷屏
+        if (!m_ocr.isRunning())
+        {
+            emit logMessage(error, true);
+        }
+        return false;
+    }
+
+    QRect box;
+    if (!OcrService::findText(words, target, &box))
+    {
+        return false;
+    }
+
+    QRect boxInCrop = box;
+    if (scale != 1.0)
+    {
+        boxInCrop = QRect(qRound(box.x() / scale),
+                          qRound(box.y() / scale),
+                          qRound(box.width() / scale),
+                          qRound(box.height() / scale));
+    }
+
+    if (screenPos != nullptr)
+    {
+        *screenPos = m_currentOrigin + crop.topLeft() + boxInCrop.center();
+    }
+    return true;
+}
+
 void BotEngine::performClick(const QPoint& screenPos)
 {
     Clicker::click(screenPos, m_config.clickMode, m_config.targetWindowHandle);
+}
+
+void BotEngine::clickScreenCenter(int times)
+{
+    const QPoint center = ScreenCapture::virtualDesktopRect().center();
+    for (int i = 0; i < times; ++i)
+    {
+        performClick(center);
+        if (i + 1 < times)
+        {
+            QThread::msleep(120);
+        }
+    }
 }
 
 void BotEngine::start()
@@ -182,15 +256,30 @@ void BotEngine::start()
         }
     }
 
+    if (m_config.contOcrEnabled)
+    {
+        emit logMessage(QStringLiteral("正在启动中文 OCR 引擎（首次约需数秒）..."), false);
+        QString ocrError;
+        if (!m_ocr.start(&ocrError))
+        {
+            emit logMessage(QStringLiteral("OCR 启动失败：%1").arg(ocrError), true);
+            return;
+        }
+        emit logMessage(QStringLiteral("OCR 就绪，将按文字识别「%1」").arg(m_config.contOcrText), false);
+    }
+
     m_running = true;
     m_scanCount = 0;
-    m_expectedTurn = 1;
-    m_hasImage1Pos = false;
-    m_turnTimer.invalidate();
+    m_endTurnCount = 0;
+    m_battleArmed = true;
     m_stage = Stage::Idle;
 
     emit logMessage(QStringLiteral("=== 已启动 ==="), false);
-    setStage(Stage::WaitingImage1);
+    emit logMessage(QStringLiteral("任意时刻：识别「查看战场」→点击屏幕中央3次；识别「开始」→开始新一局"), false);
+    emit logMessage(QStringLiteral("优先级2=继续(OCR)/确定，优先级3=结束回合，优先级4=主逻辑（x≥%1 则 设置→投降）")
+                        .arg(kSurrenderThreshold),
+                    false);
+    setStage(Stage::LogicB_WaitStart);
 
     m_timer->start(100);
 }
@@ -204,6 +293,7 @@ void BotEngine::stop()
 
     m_running = false;
     m_timer->stop();
+    m_ocr.stop();
     setStage(Stage::Idle);
     emit logMessage(QStringLiteral("=== 已停止 ==="), false);
 }
@@ -227,47 +317,20 @@ void BotEngine::onTick()
     }
 
     m_currentOrigin = m_capture.lastCaptureRect().topLeft();
+    m_currentScreen = screen;
     m_currentGray = Matcher::toGray(screen);
     m_clickedThisTick = false;
     m_drawRois.clear();
     m_drawHits.clear();
 
-    switch (m_stage)
+    if (m_stage == Stage::Idle)
     {
-    case Stage::Idle:
-        setStage(Stage::WaitingImage1);
-        break;
+        setStage(Stage::LogicB_WaitStart);
+    }
 
-    case Stage::WaitingImage1:
-        handleWaitingImage1();
-        break;
-
-    case Stage::WaitingImage2:
-        handleWaitingImage2();
-        break;
-
-    case Stage::WaitingImage3:
-        handleWaitingImage3();
-        break;
-
-    case Stage::Playing:
-        handlePlaying();
-        break;
-
-    case Stage::OpenSettings:
-        handleOpenSettings();
-        break;
-
-    case Stage::Surrender:
-        handleSurrender();
-        break;
-
-    case Stage::Returning:
-        handleReturning();
-        break;
-
-    default:
-        break;
+    if (!handlePriority())
+    {
+        handleMainLogic();
     }
 
     m_scanCount++;
@@ -280,153 +343,115 @@ void BotEngine::onTick()
     m_timer->start(qMax(30, delay));
 }
 
-void BotEngine::handleWaitingImage1()
+bool BotEngine::handlePriority()
 {
-    if (matchKey(QStringLiteral("img2"), nullptr))
-    {
-        emit logMessage(QStringLiteral("识别到 图片2（选择要替换的卡牌）"), false);
-        setStage(Stage::WaitingImage3);
-        return;
-    }
-
     Matcher::Result result;
-    if (matchKey(QStringLiteral("img1"), &result))
+
+    // 任意时刻识别到“查看战场”：点击屏幕中央 3 次。
+    // 该按钮可能持续停留在屏幕上，因此只有“从消失到再次出现”才触发一次三连击，避免反复点击；
+    // 已触发但按钮仍在时，不拦截后续判断，保证「开始」等规则同样一直执行。
+    const bool battleFound = matchKey(QStringLiteral("battle"), &result);
+    if (battleFound && m_battleArmed)
     {
-        m_lastImage1Pos = result.rect.center();
-        m_hasImage1Pos = true;
-        performClick(m_lastImage1Pos);
+        m_battleArmed = false;
         m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("识别到 图片1（开始），已点击"), false);
+        emit logMessage(QStringLiteral("识别到「查看战场」，点击屏幕中央 3 次"), false);
+        clickScreenCenter(3);
+        return true;
     }
-}
-
-void BotEngine::handleWaitingImage2()
-{
-    if (matchKey(QStringLiteral("img2"), nullptr))
+    if (!battleFound)
     {
-        emit logMessage(QStringLiteral("识别到 图片2（选择要替换的卡牌）"), false);
-        setStage(Stage::WaitingImage3);
+        m_battleArmed = true;
     }
-}
 
-void BotEngine::handleWaitingImage3()
-{
-    Matcher::Result result;
-    if (matchKey(QStringLiteral("img3"), &result))
+    // 优先级 1：任意时刻识别到“开始”
+    if (matchKey(QStringLiteral("start"), &result))
     {
         performClick(result.rect.center());
         m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("识别到 图片3（确认），已点击"), false);
-
-        m_expectedTurn = 1;
-        m_turnTimer.restart();
-        setStage(Stage::Playing);
-    }
-}
-
-void BotEngine::handlePlaying()
-{
-    if (m_expectedTurn > 5)
-    {
-        setStage(Stage::OpenSettings);
-        return;
+        m_endTurnCount = 0;
+        emit logMessage(QStringLiteral("优先级1：识别到「开始」，已点击（视为新一局开始）-> 执行逻辑a"), false);
+        setStage(Stage::LogicA_InGame);
+        return true;
     }
 
-    const QString key = turnKey(m_expectedTurn);
-
-    Matcher::Result turnResult;
-    if (matchKey(key, &turnResult))
+    // 优先级 2：任意时刻识别到“确定”
+    if (matchKey(QStringLiteral("confirm"), &result))
     {
-        Matcher::Result endTurnResult;
-        if (matchKey(QStringLiteral("img5"), &endTurnResult))
+        performClick(result.rect.center());
+        m_clickedThisTick = true;
+        emit logMessage(QStringLiteral("优先级2：识别到「确定」，已点击"), false);
+        return true;
+    }
+
+    // 优先级 2：任意时刻 OCR 识别到“继续”
+    if (m_config.contOcrEnabled)
+    {
+        QPoint contPos;
+        if (detectOcrText(m_config.contOcrText, m_config.contOcrRoi, &contPos))
         {
-            performClick(endTurnResult.rect.center());
+            performClick(contPos);
             m_clickedThisTick = true;
-            emit logMessage(QStringLiteral("识别到 回合%1，已点击 图片5（结束回合）").arg(m_expectedTurn), false);
-
-            m_expectedTurn++;
-            m_turnTimer.restart();
-
-            if (m_expectedTurn > 5)
-            {
-                emit logMessage(QStringLiteral("第5回合完成，接下来打开设置并投降"), false);
-            }
+            m_endTurnCount = 0;
+            emit logMessage(QStringLiteral("优先级2：OCR 识别到「%1」，已点击（视为对局结束）-> 执行逻辑b").arg(m_config.contOcrText), false);
+            setStage(Stage::LogicB_WaitStart);
+            return true;
         }
-        else
-        {
-            emit logMessage(QStringLiteral("识别到 回合%1，但未找到 图片5（结束回合）").arg(m_expectedTurn), true);
-        }
-        return;
     }
 
-    if (m_config.retryClickOnTimeout
-        && m_turnTimer.isValid()
-        && m_turnTimer.elapsed() > static_cast<qint64>(m_config.turnWaitTimeoutSec) * 1000)
+    // 优先级 3：对局中任意时刻识别到“结束回合”
+    if (m_stage == Stage::LogicA_InGame && matchKey(QStringLiteral("endTurn"), &result))
     {
-        Matcher::Result endTurnResult;
-        if (matchKey(QStringLiteral("img5"), &endTurnResult))
+        performClick(result.rect.center());
+        m_clickedThisTick = true;
+        m_endTurnCount++;
+        emit logMessage(QStringLiteral("优先级3：识别到「结束回合」，已点击，记录次数 x=%1").arg(m_endTurnCount), false);
+
+        if (m_endTurnCount >= kSurrenderThreshold)
         {
-            performClick(endTurnResult.rect.center());
+            emit logMessage(QStringLiteral("x ≥ %1，转入主逻辑：打开设置并投降").arg(kSurrenderThreshold), false);
+            setStage(Stage::OpenMenu);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void BotEngine::handleMainLogic()
+{
+    Matcher::Result result;
+
+    switch (m_stage)
+    {
+    case Stage::LogicB_WaitStart:
+    case Stage::LogicA_InGame:
+        // 逻辑a / 逻辑b：保持执行。等待的动作由优先级 1~3 每 tick 检查，这里不做额外点击。
+        break;
+
+    case Stage::OpenMenu:
+        if (matchKey(QStringLiteral("menu"), &result))
+        {
+            performClick(result.rect.center());
             m_clickedThisTick = true;
-            emit logMessage(QStringLiteral("等待 回合%1 超时，重试点击 图片5（结束回合）").arg(m_expectedTurn), true);
-            m_turnTimer.restart();
+            emit logMessage(QStringLiteral("主逻辑：识别到「设置齿轮」，已点击"), false);
+            setStage(Stage::Surrender);
         }
-    }
-}
+        break;
 
-void BotEngine::handleOpenSettings()
-{
-    Matcher::Result result;
-    if (matchKey(QStringLiteral("img10"), &result))
-    {
-        performClick(result.rect.center());
-        m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("识别到 图片10（设置齿轮），已点击"), false);
-        setStage(Stage::Surrender);
-    }
-}
+    case Stage::Surrender:
+        if (matchKey(QStringLiteral("surrender"), &result))
+        {
+            performClick(result.rect.center());
+            m_clickedThisTick = true;
+            m_endTurnCount = 0;
+            emit logMessage(QStringLiteral("主逻辑：识别到「投降」，已点击，次数 x 清零 -> 执行逻辑b"), false);
+            setStage(Stage::LogicB_WaitStart);
+        }
+        break;
 
-void BotEngine::handleSurrender()
-{
-    Matcher::Result result;
-    if (matchKey(QStringLiteral("img11"), &result))
-    {
-        performClick(result.rect.center());
-        m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("识别到 图片11（投降），已点击"), false);
-        setStage(Stage::Returning);
-    }
-}
-
-void BotEngine::handleReturning()
-{
-    Matcher::Result result;
-    if (matchKey(QStringLiteral("img1"), &result))
-    {
-        m_lastImage1Pos = result.rect.center();
-        m_hasImage1Pos = true;
-        performClick(m_lastImage1Pos);
-        m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("识别到 图片1（开始），已点击，开始新一轮循环"), false);
-        setStage(Stage::WaitingImage2);
-        return;
-    }
-
-    if (m_hasImage1Pos)
-    {
-        performClick(m_lastImage1Pos);
-        m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("未识别到 图片1，点击图片1的位置 (%1, %2) 继续等待").arg(m_lastImage1Pos.x()).arg(m_lastImage1Pos.y()), false);
-    }
-    else if (m_config.hasFallbackClickPoint)
-    {
-        performClick(m_config.fallbackClickPoint);
-        m_clickedThisTick = true;
-        emit logMessage(QStringLiteral("未识别到 图片1，点击备用坐标 (%1, %2) 继续等待").arg(m_config.fallbackClickPoint.x()).arg(m_config.fallbackClickPoint.y()), false);
-    }
-    else
-    {
-        emit logMessage(QStringLiteral("未识别到 图片1，且没有可用的点击位置"), true);
+    default:
+        break;
     }
 }
 
@@ -453,22 +478,20 @@ void BotEngine::buildPreview(const QImage& screen)
     for (const QRect& rect : m_drawRois)
     {
         const QRect imageRect = rect.translated(-m_currentOrigin);
-        const QRect target(static_cast<int>(imageRect.x() * ratio),
-                           static_cast<int>(imageRect.y() * ratio),
-                           static_cast<int>(imageRect.width() * ratio),
-                           static_cast<int>(imageRect.height() * ratio));
-        painter.drawRect(target);
+        painter.drawRect(QRect(static_cast<int>(imageRect.x() * ratio),
+                               static_cast<int>(imageRect.y() * ratio),
+                               static_cast<int>(imageRect.width() * ratio),
+                               static_cast<int>(imageRect.height() * ratio)));
     }
 
     painter.setPen(QPen(QColor(0, 255, 0), 2));
     for (const QRect& rect : m_drawHits)
     {
         const QRect imageRect = rect.translated(-m_currentOrigin);
-        const QRect target(static_cast<int>(imageRect.x() * ratio),
-                           static_cast<int>(imageRect.y() * ratio),
-                           static_cast<int>(imageRect.width() * ratio),
-                           static_cast<int>(imageRect.height() * ratio));
-        painter.drawRect(target);
+        painter.drawRect(QRect(static_cast<int>(imageRect.x() * ratio),
+                               static_cast<int>(imageRect.y() * ratio),
+                               static_cast<int>(imageRect.width() * ratio),
+                               static_cast<int>(imageRect.height() * ratio)));
     }
 
     painter.setPen(QPen(QColor(255, 210, 0), 2));

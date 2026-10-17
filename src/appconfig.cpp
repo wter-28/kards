@@ -20,17 +20,12 @@ QList<TemplateConfig> defaultTemplates()
         list.append(item);
     };
 
-    add(QStringLiteral("img1"),  QStringLiteral("图片1  开始"),            QStringLiteral("1.png"));
-    add(QStringLiteral("img2"),  QStringLiteral("图片2  选择要替换的卡牌"), QStringLiteral("2.png"));
-    add(QStringLiteral("img3"),  QStringLiteral("图片3  确认"),            QStringLiteral("3.png"));
-    add(QStringLiteral("turn1"), QStringLiteral("回合1  (1 K/1)"),         QStringLiteral("4.png"));
-    add(QStringLiteral("img5"),  QStringLiteral("图片5  结束回合"),        QStringLiteral("5.png"));
-    add(QStringLiteral("turn2"), QStringLiteral("回合2  (2 K/2)"),         QStringLiteral("6.png"));
-    add(QStringLiteral("turn3"), QStringLiteral("回合3  (3 K/3)"),         QStringLiteral("7.png"));
-    add(QStringLiteral("turn4"), QStringLiteral("回合4  (4 K/4)"),         QStringLiteral("8.png"));
-    add(QStringLiteral("turn5"), QStringLiteral("回合5  (5 K/5)"),         QStringLiteral("9.png"));
-    add(QStringLiteral("img10"), QStringLiteral("图片10  设置齿轮"),       QStringLiteral("10.png"));
-    add(QStringLiteral("img11"), QStringLiteral("图片11  投降"),           QStringLiteral("11.png"));
+    add(QStringLiteral("start"),     QStringLiteral("图片1   开始"),        QStringLiteral("1.png"));
+    add(QStringLiteral("battle"),    QStringLiteral("查看战场"),            QStringLiteral("12.png"));
+    add(QStringLiteral("confirm"),   QStringLiteral("图片3   确定"),        QStringLiteral("3.png"));
+    add(QStringLiteral("endTurn"),   QStringLiteral("图片5   结束回合"),    QStringLiteral("5.png"));
+    add(QStringLiteral("menu"),      QStringLiteral("图片10  设置齿轮"),    QStringLiteral("10.png"));
+    add(QStringLiteral("surrender"), QStringLiteral("图片11  投降"),        QStringLiteral("11.png"));
 
     return list;
 }
@@ -72,14 +67,9 @@ bool saveConfig(const AppConfig& config, const QString& path)
     root.insert(QStringLiteral("clickMode"), config.clickMode);
     root.insert(QStringLiteral("targetWindowTitle"), config.targetWindowTitle);
     root.insert(QStringLiteral("targetWindowHandle"), static_cast<double>(config.targetWindowHandle));
-    root.insert(QStringLiteral("turnWaitTimeoutSec"), config.turnWaitTimeoutSec);
-    root.insert(QStringLiteral("retryClickOnTimeout"), config.retryClickOnTimeout);
-    root.insert(QStringLiteral("hasFallbackClickPoint"), config.hasFallbackClickPoint);
-
-    QJsonObject point;
-    point.insert(QStringLiteral("x"), config.fallbackClickPoint.x());
-    point.insert(QStringLiteral("y"), config.fallbackClickPoint.y());
-    root.insert(QStringLiteral("fallbackClickPoint"), point);
+    root.insert(QStringLiteral("contOcrEnabled"), config.contOcrEnabled);
+    root.insert(QStringLiteral("contOcrText"), config.contOcrText);
+    root.insert(QStringLiteral("contOcrRoi"), rectToJson(config.contOcrRoi));
 
     QJsonArray array;
     for (const TemplateConfig& item : config.templates)
@@ -132,31 +122,33 @@ bool loadConfig(AppConfig& config, const QString& path)
     loaded.clickMode = root.value(QStringLiteral("clickMode")).toInt(loaded.clickMode);
     loaded.targetWindowTitle = root.value(QStringLiteral("targetWindowTitle")).toString();
     loaded.targetWindowHandle = static_cast<qint64>(root.value(QStringLiteral("targetWindowHandle")).toDouble());
-    loaded.turnWaitTimeoutSec = root.value(QStringLiteral("turnWaitTimeoutSec")).toInt(loaded.turnWaitTimeoutSec);
-    loaded.retryClickOnTimeout = root.value(QStringLiteral("retryClickOnTimeout")).toBool(loaded.retryClickOnTimeout);
-    loaded.hasFallbackClickPoint = root.value(QStringLiteral("hasFallbackClickPoint")).toBool(false);
+    loaded.contOcrEnabled = root.value(QStringLiteral("contOcrEnabled")).toBool(loaded.contOcrEnabled);
+    loaded.contOcrText = root.value(QStringLiteral("contOcrText")).toString(loaded.contOcrText);
+    loaded.contOcrRoi = rectFromJson(root.value(QStringLiteral("contOcrRoi")).toObject());
 
-    const QJsonObject point = root.value(QStringLiteral("fallbackClickPoint")).toObject();
-    loaded.fallbackClickPoint = QPoint(point.value(QStringLiteral("x")).toInt(),
-                                       point.value(QStringLiteral("y")).toInt());
-
+    // 以内置默认模板为基准，再用配置文件中同一键名的项覆盖文件名/启用状态/搜索区域。
+    // 这样既能保留用户设置，也能在新增默认模板（键名）时自动补齐；
+    // 旧版本遗留的、键名不一致的模板项会被忽略，不会破坏流程。
+    QList<TemplateConfig> templates = defaultTemplates();
     const QJsonArray array = root.value(QStringLiteral("templates")).toArray();
-    if (!array.isEmpty())
+    for (const QJsonValue& value : array)
     {
-        QList<TemplateConfig> templates;
-        for (const QJsonValue& value : array)
+        const QJsonObject obj = value.toObject();
+        const QString key = obj.value(QStringLiteral("key")).toString();
+
+        for (TemplateConfig& item : templates)
         {
-            const QJsonObject obj = value.toObject();
-            TemplateConfig item;
-            item.key = obj.value(QStringLiteral("key")).toString();
-            item.displayName = obj.value(QStringLiteral("displayName")).toString();
-            item.fileName = obj.value(QStringLiteral("fileName")).toString();
-            item.enabled = obj.value(QStringLiteral("enabled")).toBool(true);
+            if (item.key != key)
+            {
+                continue;
+            }
+            item.fileName = obj.value(QStringLiteral("fileName")).toString(item.fileName);
+            item.enabled = obj.value(QStringLiteral("enabled")).toBool(item.enabled);
             item.roi = rectFromJson(obj.value(QStringLiteral("roi")).toObject());
-            templates.append(item);
+            break;
         }
-        loaded.templates = templates;
     }
+    loaded.templates = templates;
 
     config = loaded;
     return true;

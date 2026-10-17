@@ -222,29 +222,33 @@ QWidget* MainWindow::buildSettingsPanel()
     windowRow->addWidget(refreshButton);
     form->addRow(QStringLiteral("后台点击目标窗口"), windowRow);
 
-    m_timeoutSpin = new QSpinBox(group);
-    m_timeoutSpin->setRange(5, 600);
-    m_timeoutSpin->setSuffix(QStringLiteral(" 秒"));
-    form->addRow(QStringLiteral("等待回合超时"), m_timeoutSpin);
+    auto* ocrRow = new QHBoxLayout();
+    m_contOcrCheck = new QCheckBox(QStringLiteral("启用"), group);
+    m_contTextEdit = new QLineEdit(group);
+    m_contTextEdit->setMaximumWidth(120);
+    ocrRow->addWidget(m_contOcrCheck);
+    ocrRow->addWidget(new QLabel(QStringLiteral("识别文字："), group));
+    ocrRow->addWidget(m_contTextEdit);
+    ocrRow->addStretch(1);
+    form->addRow(QStringLiteral("「继续」文字识别(OCR)"), ocrRow);
 
-    m_retryCheck = new QCheckBox(QStringLiteral("超时后重试点击“结束回合”"), group);
-    form->addRow(QStringLiteral(""), m_retryCheck);
-
-    auto* fallbackRow = new QHBoxLayout();
-    m_useFallbackCheck = new QCheckBox(QStringLiteral("使用"), group);
-    m_fallbackXSpin = new QSpinBox(group);
-    m_fallbackXSpin->setRange(-20000, 20000);
-    m_fallbackYSpin = new QSpinBox(group);
-    m_fallbackYSpin->setRange(-20000, 20000);
-    fallbackRow->addWidget(m_useFallbackCheck);
-    fallbackRow->addWidget(new QLabel(QStringLiteral("X:"), group));
-    fallbackRow->addWidget(m_fallbackXSpin);
-    fallbackRow->addWidget(new QLabel(QStringLiteral("Y:"), group));
-    fallbackRow->addWidget(m_fallbackYSpin);
-    form->addRow(QStringLiteral("图片1位置未知时备用坐标"), fallbackRow);
+    auto* ocrRoiRow = new QHBoxLayout();
+    auto* ocrRoiButton = new QPushButton(QStringLiteral("框选区域"), group);
+    auto* ocrRoiClearButton = new QPushButton(QStringLiteral("清除"), group);
+    m_ocrRoiLabel = new QLabel(group);
+    ocrRoiRow->addWidget(ocrRoiButton);
+    ocrRoiRow->addWidget(ocrRoiClearButton);
+    ocrRoiRow->addWidget(m_ocrRoiLabel, 1);
+    form->addRow(QStringLiteral("OCR 搜索区域"), ocrRoiRow);
 
     connect(browseButton, &QPushButton::clicked, this, &MainWindow::onBrowseAssets);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshWindows);
+    connect(ocrRoiButton, &QPushButton::clicked, this, &MainWindow::onPickOcrRoi);
+    connect(ocrRoiClearButton, &QPushButton::clicked, this, [this]()
+    {
+        m_config.contOcrRoi = QRect();
+        updateOcrRoiLabel();
+    });
 
     return group;
 }
@@ -268,7 +272,7 @@ QWidget* MainWindow::buildTemplatePanel()
     m_table->verticalHeader()->setVisible(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setEditTriggers(QAbstractItemView::DoubleClicked);
     layout->addWidget(m_table);
 
     auto* buttonRow = new QHBoxLayout();
@@ -301,8 +305,6 @@ void MainWindow::applyConfigToUi()
     m_scanSpin->setValue(m_config.scanIntervalMs);
     m_cooldownSpin->setValue(m_config.clickCooldownMs);
     m_thresholdSpin->setValue(m_config.threshold);
-    m_timeoutSpin->setValue(m_config.turnWaitTimeoutSec);
-    m_retryCheck->setChecked(m_config.retryClickOnTimeout);
 
     const int coarseIndex = m_coarseCombo->findData(m_config.coarseFactor);
     m_coarseCombo->setCurrentIndex(coarseIndex >= 0 ? coarseIndex : 0);
@@ -310,9 +312,9 @@ void MainWindow::applyConfigToUi()
     const int modeIndex = m_clickModeCombo->findData(m_config.clickMode);
     m_clickModeCombo->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
 
-    m_useFallbackCheck->setChecked(m_config.hasFallbackClickPoint);
-    m_fallbackXSpin->setValue(m_config.fallbackClickPoint.x());
-    m_fallbackYSpin->setValue(m_config.fallbackClickPoint.y());
+    m_contOcrCheck->setChecked(m_config.contOcrEnabled);
+    m_contTextEdit->setText(m_config.contOcrText);
+    updateOcrRoiLabel();
 }
 
 void MainWindow::collectUiToConfig()
@@ -323,11 +325,10 @@ void MainWindow::collectUiToConfig()
     m_config.threshold = m_thresholdSpin->value();
     m_config.coarseFactor = m_coarseCombo->currentData().toInt();
     m_config.clickMode = m_clickModeCombo->currentData().toInt();
-    m_config.turnWaitTimeoutSec = m_timeoutSpin->value();
-    m_config.retryClickOnTimeout = m_retryCheck->isChecked();
 
-    m_config.hasFallbackClickPoint = m_useFallbackCheck->isChecked();
-    m_config.fallbackClickPoint = QPoint(m_fallbackXSpin->value(), m_fallbackYSpin->value());
+    m_config.contOcrEnabled = m_contOcrCheck->isChecked();
+    const QString contText = m_contTextEdit->text().trimmed();
+    m_config.contOcrText = contText.isEmpty() ? QStringLiteral("继续") : contText;
 
     if (m_windowCombo->currentIndex() >= 0)
     {
@@ -341,6 +342,16 @@ void MainWindow::collectUiToConfig()
 
     for (int row = 0; row < m_table->rowCount() && row < m_config.templates.size(); ++row)
     {
+        QTableWidgetItem* fileItem = m_table->item(row, kColumnFile);
+        if (fileItem != nullptr)
+        {
+            const QString fileName = fileItem->text().trimmed();
+            if (!fileName.isEmpty())
+            {
+                m_config.templates[row].fileName = fileName;
+            }
+        }
+
         QTableWidgetItem* item = m_table->item(row, kColumnEnable);
         if (item != nullptr)
         {
@@ -362,7 +373,8 @@ void MainWindow::refreshTemplateTable()
         m_table->setItem(row, kColumnName, nameItem);
 
         auto* fileItem = new QTableWidgetItem(item.fileName);
-        fileItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        fileItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
+        fileItem->setToolTip(QStringLiteral("双击可修改资源文件名"));
         m_table->setItem(row, kColumnFile, fileItem);
 
         const QString roiText = item.roi.isEmpty()
@@ -378,6 +390,20 @@ void MainWindow::refreshTemplateTable()
         enableItem->setCheckState(item.enabled ? Qt::Checked : Qt::Unchecked);
         m_table->setItem(row, kColumnEnable, enableItem);
     }
+}
+
+void MainWindow::updateOcrRoiLabel()
+{
+    if (m_ocrRoiLabel == nullptr)
+    {
+        return;
+    }
+    m_ocrRoiLabel->setText(m_config.contOcrRoi.isEmpty()
+                               ? QStringLiteral("全屏搜索")
+                               : QStringLiteral("%1, %2, %3, %4").arg(m_config.contOcrRoi.x())
+                                     .arg(m_config.contOcrRoi.y())
+                                     .arg(m_config.contOcrRoi.width())
+                                     .arg(m_config.contOcrRoi.height()));
 }
 
 void MainWindow::onBrowseAssets()
@@ -430,6 +456,28 @@ void MainWindow::onClearRoi()
     m_config.templates[row].roi = QRect();
     refreshTemplateTable();
     m_table->selectRow(row);
+}
+
+void MainWindow::onPickOcrRoi()
+{
+    ScreenCapture capture;
+    const QImage screen = capture.grabDesktop();
+    if (screen.isNull())
+    {
+        QMessageBox::warning(this, QStringLiteral("错误"), QStringLiteral("屏幕截图失败"));
+        return;
+    }
+
+    RoiPickerDialog dialog(QStringLiteral("OCR 搜索区域（继续）"),
+                           capture.lastCaptureRect(),
+                           m_config.contOcrRoi,
+                           this);
+
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        m_config.contOcrRoi = dialog.selection();
+        updateOcrRoiLabel();
+    }
 }
 
 void MainWindow::onSaveConfig()
