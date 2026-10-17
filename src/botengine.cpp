@@ -347,31 +347,40 @@ bool BotEngine::handlePriority()
 {
     Matcher::Result result;
 
+    // 「查看战场」与「开始」在任何状态下都持续检测，且互不阻塞：
+    // 二者在同一 tick 内都会各自执行，不会因为命中其中一个而跳过另一个。
+    bool acted = false;
+
     // 任意时刻识别到“查看战场”：点击屏幕中央 3 次。
-    // 该按钮可能持续停留在屏幕上，因此只有“从消失到再次出现”才触发一次三连击，避免反复点击；
-    // 已触发但按钮仍在时，不拦截后续判断，保证「开始」等规则同样一直执行。
+    // 该按钮可能持续停留在屏幕上，因此只有“从消失到再次出现”才触发一次三连击，避免反复点击。
     const bool battleFound = matchKey(QStringLiteral("battle"), &result);
     if (battleFound && m_battleArmed)
     {
         m_battleArmed = false;
         m_clickedThisTick = true;
+        acted = true;
         emit logMessage(QStringLiteral("识别到「查看战场」，点击屏幕中央 3 次"), false);
         clickScreenCenter(3);
-        return true;
     }
     if (!battleFound)
     {
         m_battleArmed = true;
     }
 
-    // 优先级 1：任意时刻识别到“开始”
+    // 任意时刻识别到“开始”：立即点击，视为新一局开始 -> 执行逻辑a
     if (matchKey(QStringLiteral("start"), &result))
     {
         performClick(result.rect.center());
         m_clickedThisTick = true;
         m_endTurnCount = 0;
+        acted = true;
         emit logMessage(QStringLiteral("优先级1：识别到「开始」，已点击（视为新一局开始）-> 执行逻辑a"), false);
         setStage(Stage::LogicA_InGame);
+    }
+
+    // 「查看战场 / 开始」本 tick 已有动作时，其余优先级让位，下一 tick 继续检测
+    if (acted)
+    {
         return true;
     }
 
